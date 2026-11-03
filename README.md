@@ -41,6 +41,23 @@ Your other five sounds aren't touched, but the Toy sound is replaced until you g
 4. **Create it.** Tick the risk box and click **Create patched copy**. Progress appears in the log, and it takes a few seconds.
 5. **Find it.** Click **Show patched file** to see the result in Finder or File Explorer.
 
+### Opening it from the command line
+
+If the launcher won't run, or you want to see any error messages, start the patcher from a terminal instead. It opens the same window and takes no options.
+
+1. Open **Terminal** on a Mac, or **Command Prompt** on Windows.
+2. Go to the folder containing `toy_piano_patcher.py`, for example:
+
+    ```bash
+    cd ~/Downloads/toy_piano_patcher
+    ```
+
+3. Start it:
+    - **Mac or Linux:** `python3 toy_piano_patcher.py`
+    - **Windows (untested):** `py -3 toy_piano_patcher.py`, or `python toy_piano_patcher.py` if `py` isn't found.
+
+Then carry on from step 2 above. Any errors appear in the terminal, and closing the window returns you to the prompt.
+
 ### What you get
 
 | Your original | Folder created | Contains |
