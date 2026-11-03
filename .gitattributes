@@ -1,0 +1,4 @@
+# The bundled Pythons must be stored exactly as shipped: no line-ending conversion, and no text diffs.
+vendor/** -text -diff
+# Windows batch files need Windows line endings.
+*.bat text eol=crlf

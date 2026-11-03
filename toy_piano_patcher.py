@@ -10,13 +10,18 @@ import hashlib
 import os
 import plistlib
 import queue
+import re
 import shutil
+import stat
 import struct
 import subprocess
 import sys
 import threading
+import zipfile
 
-TOOL_TAG = 'v130-3p'
+PATCHER_VERSION = '1'  # a whole number, set by the pre-commit hook from VERSION
+FIRMWARE_TAG = 'v130-3'  # the manufacturer's updater version this patches
+TOOL_TAG = f'{FIRMWARE_TAG}_v{PATCHER_VERSION}'  # used in output names, e.g. v130-3_v1
 DAT_NAME = 'reface updater.dat'
 SOURCE_SHA256 = '115cd5bbc80ec1d5852bd1bdc3d36dd0ce5e2c82e7534710028ac35329b931e4'
 PATCHED_SHA256 = '5f78926f05a1c4c78e05c6434c1b069829cc46da2d34e1ee1582f1c968596385'
@@ -168,10 +173,12 @@ def find_source(source):
     if os.path.isfile(source):
         if os.path.basename(source).lower().endswith('.dat'):
             return 'dat', source, source
+        if os.path.basename(source).lower().endswith('.zip'):
+            return 'zip', source, None
         if os.path.basename(source).lower().endswith('.exe'):
             source = os.path.dirname(source)
         else:
-            raise PatchError('Select the updater app, its folder, or its .dat file.')
+            raise PatchError('Select the updater app, its .exe, the .zip it came in, its folder, or its .dat file.')
     if source.endswith('.app'):
         return 'mac', source, os.path.join(source, 'Contents', 'Resources', DAT_NAME)
     if os.path.isfile(os.path.join(source, DAT_NAME)):
@@ -180,6 +187,64 @@ def find_source(source):
     if len(apps) == 1:
         return find_source(os.path.join(source, apps[0]))
     raise PatchError(f'No "{DAT_NAME}" found in {source}')
+
+
+def zip_contents(path):
+    """Find the firmware inside a downloaded zip, without unpacking anything.
+    Returns (kind, member name of the .dat, prefix of the updater's files inside the zip)."""
+    try:
+        with zipfile.ZipFile(path) as archive:
+            names = [n for n in archive.namelist() if not n.startswith('__MACOSX/')]
+    except (zipfile.BadZipFile, OSError) as error:
+        raise PatchError(f'Could not read the zip file: {error}')
+    members = [n for n in names if n.rsplit('/', 1)[-1] == DAT_NAME]
+    if not members:
+        raise PatchError(f'No "{DAT_NAME}" found in {path}')
+    if len(members) > 1:
+        raise PatchError(f'More than one "{DAT_NAME}" in {path}. Unzip it and choose the updater itself.')
+    member = members[0]
+    app = re.match(r'(.*\.app/)Contents/Resources/[^/]+$', member)
+    if app:
+        return 'mac', member, app.group(1)
+    if '/' in member:
+        return 'windows', member, member.rsplit('/', 1)[0] + '/'
+    return 'dat', member, ''
+
+
+def extract_updater(zip_path, prefix, target):
+    """Unpack only the zip entries under prefix into target, keeping permissions and symlinks,
+    so an unpacked Mac app can still run."""
+    os.mkdir(target)
+    with zipfile.ZipFile(zip_path) as archive:
+        for info in archive.infolist():
+            name = info.filename
+            if not name.startswith(prefix) or name == prefix:
+                continue
+            parts = name[len(prefix):].rstrip('/').split('/')
+            if any(part in ('', '.', '..') for part in parts):
+                raise PatchError(f'Unsafe path in the zip, so nothing was made: {name}')
+            out = os.path.join(target, *parts)
+            if name.endswith('/'):
+                os.makedirs(out, exist_ok=True)
+                continue
+            os.makedirs(os.path.dirname(out), exist_ok=True)
+            mode = info.external_attr >> 16
+            if stat.S_ISLNK(mode):
+                os.symlink(archive.read(info).decode('utf-8'), out)
+                continue
+            with archive.open(info) as src, open(out, 'wb') as dst:
+                shutil.copyfileobj(src, dst)
+            if mode & 0o777:
+                os.chmod(out, mode & 0o777)
+
+
+def read_original(source_kind, root, dat_path):
+    """The original firmware bytes, from a file or from inside a zip."""
+    if source_kind == 'zip':
+        with zipfile.ZipFile(root) as archive:
+            return archive.read(dat_path)
+    with open(dat_path, 'rb') as handle:
+        return handle.read()
 
 
 def sign_mac_app(app, log):
@@ -196,17 +261,25 @@ def sign_mac_app(app, log):
         raise PatchError('codesign was not found. Install the Xcode command line tools.')
     except subprocess.CalledProcessError as error:
         raise PatchError(f'Signing failed: {error.stderr.strip()}')
+    # The copy inherits the download's quarantine flag from the original. Clear it on the new app only,
+    # so macOS doesn't stop the patched copy with a separate warning. The original is never touched.
+    subprocess.run(['xattr', '-dr', 'com.apple.quarantine', app], capture_output=True)
     log('Signed the new app locally.')
 
 
 def build(source, dest_parent, log):
     """Create the patched copy inside dest_parent and return its path."""
     kind, root, dat_path = find_source(source)
-    if not os.path.isfile(dat_path):
-        raise PatchError(f'No "{DAT_NAME}" found inside {root}')
-    log(f'Source: {root} ({kind})')
-    with open(dat_path, 'rb') as handle:
-        original = handle.read()
+    source_kind, prefix = kind, None
+    if source_kind == 'zip':
+        # Read the firmware straight from the zip; only the updater itself is unpacked, into the output.
+        kind, dat_path, prefix = zip_contents(root)
+        log(f'Source: {root} ({kind} updater, inside a zip)')
+    else:
+        if not os.path.isfile(dat_path):
+            raise PatchError(f'No "{DAT_NAME}" found inside {root}')
+        log(f'Source: {root} ({kind})')
+    original = read_original(source_kind, root, dat_path)
     digest = hashlib.sha256(original).hexdigest()
     if digest != SOURCE_SHA256:
         raise PatchError('This is not the v1.30 firmware this tool supports, so nothing '
@@ -216,7 +289,7 @@ def build(source, dest_parent, log):
     dest_parent = os.path.abspath(os.path.expanduser(dest_parent))
     if not os.path.isdir(dest_parent):
         raise PatchError(f'Destination folder does not exist: {dest_parent}')
-    if kind != 'dat' and is_within(dest_parent, root):
+    if source_kind not in ('dat', 'zip') and is_within(dest_parent, root):
         raise PatchError('The destination cannot be inside the original updater.')
     suffix = {'mac': 'mac', 'windows': 'win', 'dat': 'dat'}[kind]
     output = os.path.join(dest_parent, f'toy_piano_updater_{TOOL_TAG}_{suffix}')
@@ -232,26 +305,34 @@ def build(source, dest_parent, log):
     work = output + '.tmp'
     if os.path.lexists(work):
         raise PatchError(f'Already exists, please remove it first: {work}')
+
+    def copy_updater(target):
+        if source_kind == 'zip':
+            extract_updater(root, prefix, target)
+        else:
+            shutil.copytree(root, target, symlinks=True)
+
     try:
         if kind == 'dat':
             os.mkdir(work)
             with open(os.path.join(work, DAT_NAME), 'wb') as handle:
                 handle.write(patched)
         elif kind == 'windows':
-            shutil.copytree(root, work, symlinks=True)
+            copy_updater(work)
             with open(os.path.join(work, DAT_NAME), 'wb') as handle:
                 handle.write(patched)
         else:
             os.mkdir(work)
             app = os.path.join(work, f'toy piano updater {TOOL_TAG}.app')
-            shutil.copytree(root, app, symlinks=True)
+            copy_updater(app)
             with open(os.path.join(app, 'Contents', 'Resources', DAT_NAME), 'wb') as handle:
                 handle.write(patched)
             plist_path = os.path.join(app, 'Contents', 'Info.plist')
             with open(plist_path, 'rb') as handle:
                 info = plistlib.load(handle)
             info['CFBundleName'] = f'toy piano updater {TOOL_TAG}'
-            info['CFBundleIdentifier'] = f'local.toy-piano-updater.{TOOL_TAG}'
+            # Bundle identifiers allow only letters, digits, hyphens and dots, so no underscore here.
+            info['CFBundleIdentifier'] = f'local.toy-piano-updater.{FIRMWARE_TAG}-v{PATCHER_VERSION}'
             info['CFBundleGetInfoString'] = (f'{TOOL_TAG}: UNOFFICIAL patched build, not from the manufacturer. '
                                              'Toy selects bank 0/0 program 0.')
             with open(plist_path, 'wb') as handle:
@@ -262,9 +343,8 @@ def build(source, dest_parent, log):
         raise PatchError(f'Could not write the new copy: {error}\n'
                          f'Do not use the incomplete folder, and delete it yourself: {work}') from error
 
-    with open(dat_path, 'rb') as handle:
-        if hashlib.sha256(handle.read()).hexdigest() != SOURCE_SHA256:
-            raise PatchError('The original firmware changed during this run. Do not use either copy.')
+    if hashlib.sha256(read_original(source_kind, root, dat_path)).hexdigest() != SOURCE_SHA256:
+        raise PatchError('The original firmware changed during this run. Do not use either copy.')
     log('Original left unchanged.')
     log(f'Created: {output}')
     log(FLASH_TEXT)
@@ -305,7 +385,7 @@ def run_gui():
               'If that fails too, install Python from https://www.python.org/downloads/ and try again.',
               file=sys.stderr)
         return 1
-    root.title(f'Toy piano patcher ({TOOL_TAG})')
+    root.title(f'Toy piano patcher v{PATCHER_VERSION}')
     source, dest, accepted = tk.StringVar(), tk.StringVar(), tk.BooleanVar()
     frame = ttk.Frame(root, padding=12)
     frame.grid(sticky='nsew')
@@ -317,7 +397,9 @@ def run_gui():
     ttk.Label(frame, text=RISK_TEXT, wraplength=560, justify='left').grid(row=0, column=0, columnspan=2, sticky='w')
 
     def choose_source():
-        path = filedialog.askdirectory(title='Select the original updater folder', mustexist=True)
+        # A file picker, so a Mac .app (which macOS treats as a file), a Windows .exe, the downloaded
+        # .zip or the .dat can all be selected. A folder path can still be pasted into the box.
+        path = filedialog.askopenfilename(title='Select the original updater: the .app, .exe, .zip or .dat')
         if path:
             source.set(path)
 
@@ -333,7 +415,8 @@ def run_gui():
             dest.set(path)
 
     ttk.Label(frame, text='Original updater', font='TkDefaultFont 13 bold').grid(row=1, column=0, columnspan=2, sticky='w', pady=(12, 0))
-    ttk.Label(frame, text='Select the folder you downloaded that contains the original updater. It is only read, never changed.',
+    ttk.Label(frame, text='Select the original updater: the app on a Mac, the .exe on Windows, or the .zip you downloaded it in. '
+                          'You can also paste the path to its folder or .dat. It is only read, never changed.',
               wraplength=560, justify='left').grid(row=2, column=0, columnspan=2, sticky='w')
     ttk.Entry(frame, textvariable=source).grid(row=3, column=0, sticky='ew', pady=2)
     ttk.Button(frame, text='Choose...', command=choose_source).grid(row=3, column=1, padx=(6, 0), pady=2)
