@@ -19,12 +19,12 @@ import sys
 import threading
 import zipfile
 
-PATCHER_VERSION = '1'  # a whole number, set by the pre-commit hook from VERSION
+PATCHER_VERSION = '2'  # a whole number, bumped by hand at each release; see Release notes in README.md
 FIRMWARE_TAG = 'v130-3'  # the manufacturer's updater version this patches
 TOOL_TAG = f'{FIRMWARE_TAG}_v{PATCHER_VERSION}'  # used in output names, e.g. v130-3_v1
 DAT_NAME = 'reface updater.dat'
 SOURCE_SHA256 = '115cd5bbc80ec1d5852bd1bdc3d36dd0ce5e2c82e7534710028ac35329b931e4'
-PATCHED_SHA256 = '5f78926f05a1c4c78e05c6434c1b069829cc46da2d34e1ee1582f1c968596385'
+PATCHED_SHA256 = 'd11b28e6fe510add4d00e77e726a2051c6808ee0534ed6ab7e036e63bc40907d'
 IMAGE_SIZE = 0x440000
 BLOCK_PAYLOAD = 16368
 
@@ -32,7 +32,8 @@ BLOCK_PAYLOAD = 16368
 EDITS = (
     (0x1F672B, 0x01, 0x00),  # Toy record: bank LSB
     (0x1F672D, 0x09, 0x00),  # Toy record: program
-    (0x29FFFE, 0xDC, 0xE6),  # Code section trailer: balance byte, up by 10 to match
+    (0x1F672F, 0x4A, 0x7F),  # Toy record: part level, 74 (set for the Toy sound) to 127; found by facelift
+    (0x29FFFE, 0xDC, 0xB1),  # Code section trailer: balance byte, rebalanced for the three edits above
 )
 # Byte ranges in the image that each end in their own 8-byte checksum trailer.
 SECTIONS = ((0, 0x2A0000), (0x2C0000, 0x440000))
@@ -299,7 +300,7 @@ def build(source, dest_parent, log):
     log('Patching and checking...')
     patched = patch_dat(original)
     verify_patch(original, patched)
-    log('Check passed: only the 3 intended firmware bytes differ, and checksums are valid.')
+    log('Check passed: only the 4 intended firmware bytes differ, and checksums are valid.')
 
     # Build under a .tmp name and only rename when complete, so a failure can't look finished.
     work = output + '.tmp'

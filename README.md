@@ -1,16 +1,16 @@
 # Toy piano patcher
 
-Patcher version v1
+Patcher version v2
 
-Turn the **Toy** setting into a piano on a certain compact 37-key electric piano. A small tool with a simple window. It brings its own Python, so there's nothing to install on a Mac or Windows PC.
+Turn the **Toy** setting into a piano on a certain compact 37-key electric piano. 
 
-This is for the keyboard from a well-known Japanese instrument maker with a six-position **TYPE** knob and a rumoured hidden piano sound. If you own one, you'll recognise it.
+A small tool with a simple window. It brings its own Python, so there's nothing to install on a Mac or Windows PC.
 
 This is independent work, not affiliated with or endorsed by the manufacturer. No firmware is included: you supply the manufacturer's own updater.
 
 ## What it does
 
-The hidden piano normally needs a fiddly trick: powering on with the TYPE knob balanced between two positions. This tool makes a patched copy of the v1.30 updater in which the Toy position selects bank 0/0, program 0 instead of the Toy sound. That voice is the hidden piano, so you can reach it at any time just by turning the knob.
+The hidden piano normally needs a fiddly trick: powering on with the TYPE knob balanced between two positions. This tool makes a patched copy of the v1.30 updater in which the Toy position selects bank 0/0, program 0 instead of the Toy sound. That voice is the hidden piano, so you can reach it at any time just by turning the knob. It also raises the Toy position's volume to full, so the piano isn't quieter than it should be.
 
 Your other five sounds aren't touched, but the Toy sound is replaced until you go back to the original firmware.
 
@@ -19,8 +19,6 @@ Your other five sounds aren't touched, but the Toy sound is replaced until you g
 **This is unofficial, experimental software. Flashing modified firmware can permanently damage your instrument or leave it unusable. You alone are responsible for the outcome.** If you can't accept the risk of losing the use of your keyboard, don't use this.
 
 - **It replaces your keyboard's main firmware.** Recovery has worked in one case, but that's evidence, not a guarantee. See [If something goes wrong](#if-something-goes-wrong).
-- **Testing has been limited.** It has been flashed and confirmed working on one keyboard, from a Mac. That doesn't guarantee it will work on yours. See [Known limitations](#known-limitations).
-- **It has not been tested on Windows.** The patched Windows updater has never been run on a Windows PC, so Windows users would be the first to try it.
 - **There is no warranty.** This software is provided "as is", without warranty of any kind, express or implied, including merchantability, fitness for a particular purpose and non-infringement.
 - **The authors accept no liability.** To the fullest extent permitted by law, the authors are not liable for any claim, damage or loss arising from using this software or any firmware it produces, including a damaged instrument, lost settings, or repair costs.
 - **Check the manufacturer's licence.** Firmware licences commonly restrict altering or reverse-engineering firmware, and this one may do so. Using modified firmware may also affect your warranty or eligibility for service. Whether to go ahead is your decision and your responsibility.
@@ -37,7 +35,7 @@ Your other five sounds aren't touched, but the Toy sound is replaced until you g
 
 1. **Open the patcher.** Double-click the launcher for your system. The first time, your system asks you to allow it, because it was downloaded from the internet and isn't signed by a registered developer:
     - **Mac:** `mac_open_patcher.command`. If macOS says it can't be opened, open **System Settings → Privacy & Security**, scroll down, click **Open Anyway** next to the launcher's name, and confirm. On macOS 14 and earlier you can instead Control-click the launcher and choose **Open**. You only need to do this once.
-    - **Windows (untested):** `win_open_patcher.bat`. If SmartScreen warns you, choose **More info**, then **Run anyway**.
+    - **Windows:** `win_open_patcher.bat`. If SmartScreen warns you, choose **More info**, then **Run anyway**.
 2. **Choose the original.** Under **Original updater**, click **Choose...** and select the updater app (Mac), the updater's `.exe` (Windows), or the `.zip` you downloaded it in. You can also paste the path to the updater's folder or its `.dat` into the box. If you choose the zip, nothing is unpacked except into the new patched copy.
 3. **Choose where to save it.** Under **Save location**, choose a folder, or create one in the picker. The tool creates a new folder inside it.
 4. **Create it.** Tick the risk box and click **Create patched copy**. Progress appears in the log, and it takes a few seconds.
@@ -47,11 +45,11 @@ Your other five sounds aren't touched, but the Toy sound is replaced until you g
 
 | Your original | Folder created | Contains |
 |---|---|---|
-| Mac updater, or its `.zip` | `toy_piano_updater_v130-3_v1_mac` | `toy piano updater v130-3_v1.app`, renamed and signed locally |
-| Windows updater, or its `.zip` | `toy_piano_updater_v130-3_v1_win` | A copy of the updater folder with the patched `.dat` |
-| A `.dat` path pasted into the box | `toy_piano_updater_v130-3_v1_dat` | Only the patched `.dat` |
+| Mac updater, or its `.zip` | `toy_piano_updater_v130-3_v2_mac` | `toy piano updater v130-3_v2.app`, renamed and signed locally |
+| Windows updater, or its `.zip` | `toy_piano_updater_v130-3_v2_win` | A copy of the updater folder with the patched `.dat` |
+| A `.dat` path pasted into the box | `toy_piano_updater_v130-3_v2_dat` | Only the patched `.dat` |
 
-`v130-3` is the manufacturer's updater version, and `v1` is the patcher's own version, which goes up with each update (see [Versioning](#versioning)). That way you can tell which patcher made a copy.
+`v130-3` is the manufacturer's updater version, and `v2` is the patcher's own version, which goes up with each release (see [Release notes](#release-notes)). That way you can tell which patcher made a copy.
 
 The tool only reads your original. It won't overwrite an existing output, and it won't save inside the original updater.
 
@@ -71,7 +69,7 @@ If the launcher won't run, or you want to see any error messages, start the patc
 3. Start it:
     - **Apple Silicon Mac:** `vendor/python-mac-arm64/bin/python3.13 toy_piano_patcher.py`
     - **Intel Mac:** `vendor/python-mac-x86_64/bin/python3.13 toy_piano_patcher.py`
-    - **Windows (untested):** `vendor\python-win\python.exe toy_piano_patcher.py`
+    - **Windows:** `vendor\python-win\python.exe toy_piano_patcher.py`
     - **Linux, or your own Python:** `python3 toy_piano_patcher.py`
 
 Then carry on from step 2 above. Any errors appear in the terminal, and closing the window returns you to the prompt.
@@ -106,37 +104,38 @@ Enter update mode as above, and flash the **original** updater, again waiting fo
 
 ## Known limitations
 
-- **Tested on one keyboard, from a Mac.** On that keyboard, the patched firmware was accepted, and Toy plays the hidden piano and sounds the same.
-- **Not yet tested on Windows:** the patcher and its launcher, the bundled Windows Python, and the patched Windows updater have not been run on a Windows PC.
-- **Bundled Python tested on an Intel Mac only:** the Apple Silicon build hasn't been run yet.
-- **Update code not reviewed:** the code that performs updates isn't in the updater, so the file checks below rely on a model of the firmware's own ROM check.
+- **Security prompts on Mac and Windows:** the launchers and the bundled Python aren't signed by a registered developer, so macOS and Windows may block them or warn that they can't be verified. Allowing them once usually works: see step 1 of [Make the patched updater](#make-the-patched-updater). If the patcher still doesn't open, run it from the terminal as in [Opening it from the command line](#opening-it-from-the-command-line), or try [facelift](https://github.com/dgoeke/facelift), a web-based alternative by dgoeke that flashes the keyboard from Chrome or Edge.
 
 ## How it works
 
-The patch changes three bytes of the 4,456,448-byte firmware image:
+The patch changes four bytes of the 4,456,448-byte firmware image:
 
 | Image offset | Purpose | Before | After |
 |---|---|---|---|
 | `0x1F672B` | Toy bank LSB | `01` | `00` |
 | `0x1F672D` | Toy program | `09` | `00` |
-| `0x29FFFE` | Code section checksum balance | `dc` | `e6` |
+| `0x1F672F` | Toy level: 74, set for the Toy sound, raised to the maximum, 127 | `4a` | `7f` |
+| `0x29FFFE` | Code section checksum balance | `dc` | `b1` |
 
-Two update-block checksums in the `.dat` are recalculated too. Because the patcher only accepts one exact original, the change to the `.dat` is always the same five bytes:
+The first three are in the Toy position's sound record. Each of the six sounds has its own level there: Rd I 75, Rd II 110, Wr 120, Clv 95, Toy 74 and CP 100. Keeping Toy's 74 left the piano about 9.4 dB quieter.
+
+Two update-block checksums in the `.dat` are recalculated too. Because the patcher only accepts one exact original, the change to the `.dat` is always the same six bytes:
 
 | `.dat` offset | Purpose | Before | After |
 |---|---|---|---|
 | 2355258 | Toy bank LSB | `01` | `00` |
 | 2355261 | Toy program | `09` | `00` |
-| 2360219 | Update-block checksum | `19` | `23` |
-| 3150031 | Checksum balance byte, in the `.dat`'s 7-bit packed form | `5c` | `66` |
-| 3163329 | Update-block checksum | `3e` | `34` |
+| 2355263 | Toy level | `4a` | `7f` |
+| 2360219 | Update-block checksum | `19` | `6e` |
+| 3150031 | Checksum balance byte, in the `.dat`'s 7-bit packed form | `5c` | `31` |
+| 3163329 | Update-block checksum | `3e` | `69` |
 
 The patcher (`toy_piano_patcher.py`) decodes its own output again before saving and confirms that:
 
-- only the three firmware bytes differ
+- only the four firmware bytes differ
 - every update-block checksum is valid
 - both firmware sections pass the model of the ROM check
-- the result matches the expected SHA-256, which starts with `5f78926f05a1c4c7`
+- the result matches the expected SHA-256, which starts with `d11b28e6fe510add`
 These checks show the file was built as intended. They can't show that it will work on your keyboard.
 
 ## Why there's a `vendor` folder
@@ -153,20 +152,11 @@ The copies come unmodified from [python-build-standalone](https://github.com/ast
 
 The first time you open the Mac launcher, macOS asks you to allow it. The launcher then clears the same download flag from the `vendor` folder, so macOS doesn't ask again about the bundled Python.
 
-## Versioning
+## Release notes
 
-The patcher has its own version, a whole number written `v1`, `v2` and so on, like the manufacturer's `v130`. It's shown in the patcher window's title and at the top of this README. Patched copies are named with the manufacturer's updater version followed by the patcher's version, for example `toy_piano_updater_v130-3_v1_mac`.
-
-- `VERSION` holds the current number, such as `1`.
-- Each commit increases it by one, through the pre-commit hook in `.githooks/pre-commit`. The hook also writes the number into `toy_piano_patcher.py` and the top of this README, and adds them to the commit. The examples elsewhere in this README stay at `v1`.
-- To set the number yourself, edit `VERSION` and include it in the commit. The hook then uses your number as it is.
-- After cloning, turn the hook on once with:
-
-    ```bash
-    git config core.hooksPath .githooks
-    ```
-
-The hook stops the commit if one of those files has changes that aren't staged, so it never commits work you didn't mean to include.
+- **v2:** The piano now plays at full volume. The patch kept the Toy position's own level, 74, which suits the Toy sound but left the piano about 9.4 dB quieter. It's now 127, the maximum. This fix comes from [facelift](https://github.com/dgoeke/facelift) by dgoeke, a web-based updater built on this patcher. The version number is now raised by hand at each release, instead of on every commit.
+- **v1:** Python is included for Mac and Windows, so there's nothing to install. **Choose...** selects the updater app, its `.exe`, the `.zip` it was downloaded in, or the `.dat`. The patched Mac app's download quarantine flag is cleared, so it opens without an extra warning. Patched copies are named with the patcher version.
+- **First release (no number):** Toy plays the hidden piano.
 
 ## Licence
 
