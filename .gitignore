@@ -1,0 +1,5 @@
+# Python bytecode caches, rebuilt automatically
+__pycache__/
+*.pyc
+# macOS Finder files
+.DS_Store

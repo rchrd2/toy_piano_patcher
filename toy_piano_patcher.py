@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Toy-to-piano patcher. Unofficial, personal use, no warranty: see README.md.
 
-Makes a patched copy of the supported v1.30 updater (see README.md), so the Toy position selects
-bank 0/0 program 0. The source is only ever read.
+Patches the supported v1.30 firmware (see README.md) so the Toy position selects bank 0/0 program 0, then
+either sends it straight to the keyboard over MIDI (midi_out.py) or makes a patched copy of the updater.
+The source is only ever read.
 
 Open it with mac_open_patcher.command or win_open_patcher.bat, or: python3 toy_piano_patcher.py
 """
@@ -17,9 +18,10 @@ import struct
 import subprocess
 import sys
 import threading
+import time
 import zipfile
 
-PATCHER_VERSION = '2'  # a whole number, bumped by hand at each release; see Release notes in README.md
+PATCHER_VERSION = '3'  # a whole number, bumped by hand at each release; see Release notes in README.md
 FIRMWARE_TAG = 'v130-3'  # the manufacturer's updater version this patches
 TOOL_TAG = f'{FIRMWARE_TAG}_v{PATCHER_VERSION}'  # used in output names, e.g. v130-3_v1
 DAT_NAME = 'reface updater.dat'
@@ -268,8 +270,9 @@ def sign_mac_app(app, log):
     log('Signed the new app locally.')
 
 
-def build(source, dest_parent, log):
-    """Create the patched copy inside dest_parent and return its path."""
+def load_source(source, log):
+    """Find and read the original firmware, and check it is the supported v1.30.
+    Returns (source_kind, kind, root, dat_path, prefix, original bytes)."""
     kind, root, dat_path = find_source(source)
     source_kind, prefix = kind, None
     if source_kind == 'zip':
@@ -286,6 +289,12 @@ def build(source, dest_parent, log):
         raise PatchError('This is not the v1.30 firmware this tool supports, so nothing '
                          f'was changed.\nFound SHA-256: {digest}')
     log('Source firmware recognised.')
+    return source_kind, kind, root, dat_path, prefix, original
+
+
+def build(source, dest_parent, log):
+    """Create the patched copy inside dest_parent and return its path."""
+    source_kind, kind, root, dat_path, prefix, original = load_source(source, log)
 
     dest_parent = os.path.abspath(os.path.expanduser(dest_parent))
     if not os.path.isdir(dest_parent):
@@ -352,6 +361,86 @@ def build(source, dest_parent, log):
     return output
 
 
+def sysex_schedule(data):
+    """Each SysEx message, complete from F0 to F7, with when to send it in ms from the start.
+    The times are worked out as the manufacturer's updater does: a tempo map from the file's tempo events
+    (bpm = 60000000 // tempo), then (60000 / bpm) / division * ticks, rounded, per tempo segment."""
+    division = int.from_bytes(data[12:14], 'big') or 120
+    pos = 8 + int.from_bytes(data[4:8], 'big')
+    end = pos + 8 + int.from_bytes(data[pos + 4:pos + 8], 'big')
+    pos += 8
+    tick, tempos, events = 0, [(0, 120)], []
+    while pos < end:
+        delta, pos = read_vlq(data, pos)
+        tick += delta
+        if data[pos] == 0xF0:
+            length, pos = read_vlq(data, pos + 1)
+            events.append((tick, b'\xF0' + bytes(data[pos:pos + length])))
+        elif data[pos] == 0xFF:
+            kind = data[pos + 1]
+            length, pos = read_vlq(data, pos + 2)
+            if kind == 0x51:
+                tempos.append((tick, 60000000 // int.from_bytes(data[pos:pos + 3], 'big')))
+        else:
+            raise PatchError('Unexpected data in the firmware file.')
+        pos += length
+    schedule = []
+    for event_tick, message in events:
+        if message[-1] != 0xF7:
+            raise PatchError('A SysEx message in the firmware file is incomplete.')
+        due, remaining = 0, event_tick
+        for tempo_tick, bpm in reversed(tempos):
+            if tempo_tick < remaining:
+                due += int(60000.0 / bpm / division * (remaining - tempo_tick) + 0.5)
+                remaining = tempo_tick
+        schedule.append((due, message))
+    return schedule
+
+
+def send_firmware(output, schedule, progress):
+    """Send every message at its time, as the manufacturer's updater does: wait until a message is due, send it,
+    and if one is late, send the next ones as soon as they are due rather than shifting the schedule."""
+    start = time.monotonic()
+    for number, (due, message) in enumerate(schedule, 1):
+        while True:
+            wait = due / 1000 - (time.monotonic() - start)
+            if wait <= 0:
+                break
+            time.sleep(min(wait, 0.05))
+        output.send_sysex(message)
+        progress(number, len(schedule), max(0.0, schedule[-1][0] / 1000 - (time.monotonic() - start)))
+
+
+def update_directly(source, port_index, port_name, log, progress):
+    """Patch the firmware in memory, check it, and send it to the keyboard over MIDI."""
+    import midi_out
+    if re.search(r'\bIAC\b', port_name):
+        raise PatchError('macOS IAC buses drop large SysEx messages, so they cannot be used. Choose the keyboard.')
+    *_, original = load_source(source, log)
+    log('Patching and checking...')
+    patched = patch_dat(original)
+    verify_patch(original, patched)
+    log('Check passed: only the 4 intended firmware bytes differ, and checksums are valid.')
+    schedule = sysex_schedule(patched)
+    seconds = schedule[-1][0] / 1000
+    log(f'Sending {len(schedule)} messages to "{port_name}". This takes about {seconds / 60:.1f} minutes. '
+        'Keep the cable connected and the computer awake.')
+    try:
+        output = midi_out.open_output(port_index)
+    except midi_out.MidiError as error:
+        raise PatchError(str(error))
+    try:
+        send_firmware(output, schedule, progress)
+        time.sleep(2)  # let the last message leave the driver before the port is closed
+    except midi_out.MidiError as error:
+        raise PatchError(f'{error}\nThe update did not finish. Switch the keyboard off, enter update mode again, '
+                         'and send again, or flash the original updater.')
+    finally:
+        output.close()
+    log('All messages sent. Now wait until ALL 6 TYPE lamps are lit, however long it takes, '
+        'then switch the keyboard off and on.')
+
+
 def patched_item(output):
     """The thing to show the user inside an output folder: the .app, otherwise the .dat."""
     for name in sorted(os.listdir(output)):
@@ -373,7 +462,7 @@ def reveal_in_file_manager(path):
 def run_gui():
     try:
         import tkinter as tk
-        from tkinter import filedialog, ttk
+        from tkinter import filedialog, messagebox, ttk
     except ImportError:
         print('This Python has no Tkinter, which the patcher window needs.\n'
               'Install Python from https://www.python.org/downloads/ and try again.', file=sys.stderr)
@@ -388,12 +477,13 @@ def run_gui():
         return 1
     root.title(f'Toy piano patcher v{PATCHER_VERSION}')
     source, dest, accepted = tk.StringVar(), tk.StringVar(), tk.BooleanVar()
+    mode, port, status = tk.StringVar(value='direct'), tk.StringVar(), tk.StringVar()
     frame = ttk.Frame(root, padding=12)
     frame.grid(sticky='nsew')
     root.columnconfigure(0, weight=1)
     root.rowconfigure(0, weight=1)
     frame.columnconfigure(0, weight=1)
-    frame.rowconfigure(9, weight=1)
+    frame.rowconfigure(8, weight=1)
 
     ttk.Label(frame, text=RISK_TEXT, wraplength=560, justify='left').grid(row=0, column=0, columnspan=2, sticky='w')
 
@@ -422,17 +512,44 @@ def run_gui():
     ttk.Entry(frame, textvariable=source).grid(row=3, column=0, sticky='ew', pady=2)
     ttk.Button(frame, text='Choose...', command=choose_source).grid(row=3, column=1, padx=(6, 0), pady=2)
 
-    ttk.Label(frame, text='Save location', font='TkDefaultFont 13 bold').grid(row=4, column=0, columnspan=2, sticky='w', pady=(12, 0))
-    ttk.Label(frame, text=f'Select a folder, or create one. A new folder named toy_piano_updater_{TOOL_TAG}_mac (or _win) '
-                          'containing the patched updater is created inside it. Nothing is overwritten.',
-              wraplength=560, justify='left').grid(row=5, column=0, columnspan=2, sticky='w')
-    ttk.Entry(frame, textvariable=dest).grid(row=6, column=0, sticky='ew', pady=2)
-    ttk.Button(frame, text='Choose...', command=choose_dest).grid(row=6, column=1, padx=(6, 0), pady=2)
-
     ttk.Checkbutton(frame, variable=accepted, text='I accept the risk, and this is for my own personal use.',
-                    command=lambda: refresh()).grid(row=7, column=0, columnspan=2, sticky='w', pady=(12, 2))
-    actions = ttk.Frame(frame)
-    actions.grid(row=8, column=0, columnspan=2, sticky='w', pady=4)
+                    command=lambda: refresh()).grid(row=4, column=0, columnspan=2, sticky='w', pady=(12, 2))
+
+    choice = ttk.Frame(frame)
+    choice.grid(row=5, column=0, columnspan=2, sticky='w', pady=(8, 0))
+    ttk.Label(choice, text='How to update', font='TkDefaultFont 13 bold').grid(row=0, column=0, columnspan=2, sticky='w')
+    ttk.Radiobutton(choice, text='Update the keyboard directly from this app', variable=mode, value='direct',
+                    command=lambda: show_mode()).grid(row=1, column=0, sticky='w')
+    ttk.Radiobutton(choice, text='Create a patched updater to run yourself', variable=mode, value='patch',
+                    command=lambda: show_mode()).grid(row=2, column=0, sticky='w')
+
+    # Option 1: send straight to the keyboard over MIDI.
+    direct = ttk.Frame(frame)
+    direct.columnconfigure(0, weight=1)
+    ttk.Label(direct, text='MIDI port', font='TkDefaultFont 13 bold').grid(row=0, column=0, columnspan=2, sticky='w', pady=(12, 0))
+    ttk.Label(direct, text='First put the keyboard in update mode: switch it off, hold F#3, A3 and C#4 together, and '
+                           'switch it on. The Rd I lamp lights. Then choose the keyboard here.',
+              wraplength=560, justify='left').grid(row=1, column=0, columnspan=2, sticky='w')
+    port_menu = ttk.Combobox(direct, textvariable=port, state='readonly')
+    port_menu.grid(row=2, column=0, sticky='ew', pady=2)
+    ttk.Button(direct, text='Refresh', command=lambda: refresh_ports()).grid(row=2, column=1, padx=(6, 0), pady=2)
+    send_button = ttk.Button(direct, text='Send to keyboard', state='disabled')
+    send_button.grid(row=3, column=0, sticky='w', pady=4)
+    progress_bar = ttk.Progressbar(direct, maximum=100)
+    progress_bar.grid(row=4, column=0, columnspan=2, sticky='ew')
+    ttk.Label(direct, textvariable=status).grid(row=5, column=0, columnspan=2, sticky='w')
+
+    # Option 2: today's patched updater, unchanged.
+    patch = ttk.Frame(frame)
+    patch.columnconfigure(0, weight=1)
+    ttk.Label(patch, text='Save location', font='TkDefaultFont 13 bold').grid(row=0, column=0, columnspan=2, sticky='w', pady=(12, 0))
+    ttk.Label(patch, text=f'Select a folder, or create one. A new folder named toy_piano_updater_{TOOL_TAG}_mac (or _win) '
+                          'containing the patched updater is created inside it. Nothing is overwritten.',
+              wraplength=560, justify='left').grid(row=1, column=0, columnspan=2, sticky='w')
+    ttk.Entry(patch, textvariable=dest).grid(row=2, column=0, sticky='ew', pady=2)
+    ttk.Button(patch, text='Choose...', command=choose_dest).grid(row=2, column=1, padx=(6, 0), pady=2)
+    actions = ttk.Frame(patch)
+    actions.grid(row=3, column=0, columnspan=2, sticky='w', pady=4)
     patch_button = ttk.Button(actions, text='Create patched copy', state='disabled')
     patch_button.grid(row=0, column=0)
     show_button = ttk.Button(actions, text='Show patched file', state='disabled')
@@ -440,9 +557,9 @@ def run_gui():
 
     log_box = tk.Text(frame, height=10, width=78, state='disabled', wrap='word',
                       foreground='black', background='white')
-    log_box.grid(row=9, column=0, columnspan=2, sticky='nsew', pady=(4, 0))
+    log_box.grid(row=8, column=0, columnspan=2, sticky='nsew', pady=(8, 0))
     write_flash = ttk.Label(frame, text=FLASH_TEXT, wraplength=560, justify='left')
-    write_flash.grid(row=10, column=0, columnspan=2, sticky='w', pady=(6, 0))
+    write_flash.grid(row=9, column=0, columnspan=2, sticky='w', pady=(6, 0))
 
     def write_log(text):
         log_box.configure(state='normal')
@@ -452,20 +569,50 @@ def run_gui():
 
     busy = [False]
     patched = [None]
+    port_names = []
+
+    def show_mode():
+        (direct if mode.get() == 'direct' else patch).grid(row=6, column=0, columnspan=2, sticky='ew')
+        (patch if mode.get() == 'direct' else direct).grid_remove()
+        refresh()
+
+    def refresh_ports():
+        import midi_out
+        try:
+            names = midi_out.list_outputs()
+        except Exception as error:  # no MIDI system, or an unsupported platform
+            names = []
+            write_log(f'MIDI outputs unavailable: {error}')
+        port_names[:] = names
+        port_menu.configure(values=names)
+        if port.get() not in names:
+            # Preselect the keyboard, as the manufacturer's Windows updater does.
+            port.set(next((n for n in names if 'reface' in n.lower()), ''))
+        if not names:
+            status.set('No MIDI outputs found. Connect the keyboard with USB and click Refresh.')
+        refresh()
 
     def refresh():
-        ready = accepted.get() and source.get().strip() and dest.get().strip() and not busy[0]
-        patch_button.configure(state='normal' if ready else 'disabled')
+        idle = accepted.get() and source.get().strip() and not busy[0]
+        patch_button.configure(state='normal' if idle and dest.get().strip() else 'disabled')
+        send_button.configure(state='normal' if idle and port.get() else 'disabled')
 
     source.trace_add('write', lambda *_: refresh())
     dest.trace_add('write', lambda *_: refresh())
+    port.trace_add('write', lambda *_: refresh())
 
     # The worker thread never touches the window. It queues messages, and the main thread shows them.
     events = queue.Queue()
 
-    def worker(src, dst):
+    def worker(task, *args):
+        log = lambda text: events.put(('log', text))
         try:
-            events.put(('done', build(src, dst, lambda text: events.put(('log', text)))))
+            if task == 'patch':
+                events.put(('done', build(*args, log)))
+            else:
+                progress = lambda sent, total, left: events.put(('progress', (sent, total, left)))
+                update_directly(*args, log, progress)
+                events.put(('sent', None))
         except PatchError as error:
             events.put(('log', f'STOPPED: {error}'))
             events.put(('done', None))
@@ -479,9 +626,15 @@ def run_gui():
                 kind, value = events.get_nowait()
                 if kind == 'log':
                     write_log(value)
+                elif kind == 'progress':
+                    sent, total, left = value
+                    progress_bar['value'] = 100 * sent / total
+                    status.set(f'Sent {sent} of {total} messages, about {int(left) + 1} s left.')
                 else:
                     busy[0] = False
-                    if value:
+                    if kind == 'sent':
+                        status.set('Sent. Wait for all 6 TYPE lamps, then switch the keyboard off and on.')
+                    elif value:
                         patched[0] = patched_item(value)
                         show_button.configure(state='normal')
                         write_log('Done. Click "Show patched file" to find it.')
@@ -490,13 +643,31 @@ def run_gui():
             pass
         root.after(100, poll)
 
-    def start():
+    def start_patch():
         busy[0] = True
         patched[0] = None
         show_button.configure(state='disabled')
         refresh()
         write_log('Starting. This takes a few seconds...')
-        threading.Thread(target=worker, args=(source.get().strip(), dest.get().strip()), daemon=True).start()
+        threading.Thread(target=worker, args=('patch', source.get().strip(), dest.get().strip()), daemon=True).start()
+
+    def start_send():
+        name = port.get()
+        if name not in port_names:
+            write_log('STOPPED: that MIDI port is no longer there. Click Refresh.')
+            return
+        if not messagebox.askokcancel(
+                'Send to keyboard',
+                f'Send the patched firmware to "{name}"?\n\nThe keyboard must be in update mode (Rd I lamp lit) '
+                'and on its AC adaptor. Sending takes about 2.5 minutes. Don\'t unplug anything or let the '
+                'computer sleep, and don\'t switch the keyboard off until ALL 6 TYPE lamps are lit.'):
+            return
+        busy[0] = True
+        progress_bar['value'] = 0
+        status.set('Starting...')
+        refresh()
+        threading.Thread(target=worker, args=('send', source.get().strip(), port_names.index(name), name),
+                         daemon=True).start()
 
     def show_patched():
         try:
@@ -504,12 +675,22 @@ def run_gui():
         except OSError as error:
             write_log(f'Could not open the file manager: {error}. The file is at: {patched[0]}')
 
+    def on_close():
+        if busy[0] and mode.get() == 'direct' and not messagebox.askokcancel(
+                'Still sending', 'The firmware is still being sent. Closing now stops the update part-way, '
+                'and the keyboard will need flashing again. Close anyway?'):
+            return
+        root.destroy()
+
     show_button.configure(command=show_patched)
+    patch_button.configure(command=start_patch)
+    send_button.configure(command=start_send)
+    root.protocol('WM_DELETE_WINDOW', on_close)
+    show_mode()
+    refresh_ports()
     poll()
-    patch_button.configure(command=start)
     root.mainloop()
     return 0
-
 
 if __name__ == '__main__':
     sys.exit(run_gui())
