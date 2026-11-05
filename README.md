@@ -8,6 +8,10 @@ A small tool with a simple window. It brings its own Python, so there's nothing 
 
 This is independent work, not affiliated with or endorsed by the manufacturer. No firmware is included: you supply the manufacturer's own updater.
 
+If you just want to get started quickly, check out this browser-based flasher: [https://dgoeke.github.io/facelift/](https://dgoeke.github.io/facelift/).
+
+Otherwise, to download this patcher, click **Code → Download ZIP** at the top of this page, unzip it, and open `mac_open_patcher.command` (Mac) or `win_open_patcher.bat` (Windows).
+
 ## What it does
 
 The hidden piano normally needs a fiddly trick: powering on with the TYPE knob balanced between two positions. This tool patches the v1.30 firmware so the Toy position selects bank 0/0, program 0 instead of the Toy sound. It can send the patched firmware straight to your keyboard, or make a patched copy of the updater for you to run. That voice is the hidden piano, so you can reach it at any time just by turning the knob. It also raises the Toy position's volume to full, so the piano isn't quieter than it should be.
